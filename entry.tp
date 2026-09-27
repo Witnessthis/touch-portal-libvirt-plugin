@@ -1,0 +1,89 @@
+{
+  "sdk": 13,
+  "version": 101,
+  "name": "libvirt Bridge",
+  "id": "libvirtbridge",
+  "plugin_start_cmd": "env TP_PORT=12136 python3 %TP_PLUGIN_FOLDER%libvirt-bridge/bin/daemon.py",
+  "configuration": {
+    "colorDark": "#203060",
+    "colorLight": "#4070C0"
+  },
+  "settings": [
+    {
+      "name": "VM Name",
+      "type": "text",
+      "default": ""
+    },
+    {
+      "name": "XML Directory",
+      "type": "text",
+      "default": ""
+    },
+    {
+      "name": "Attached Color",
+      "type": "text",
+      "default": "#2ECC71"
+    },
+    {
+      "name": "Detached Color",
+      "type": "text",
+      "default": "#555555"
+    },
+    {
+      "name": "Other Color",
+      "type": "text",
+      "default": "#F39C12"
+    }
+  ],
+  "categories": [
+    {
+      "id": "libvirtbridge.category",
+      "name": "libvirt Bridge",
+      "actions": [
+        {
+          "id": "libvirtbridge.action.vmpower",
+          "name": "VM Power",
+          "prefix": "libvirt Bridge",
+          "type": "communicate",
+          "tryInline": true,
+          "format": "Set VM power to {$libvirtbridge.action.vmpower.operation$}",
+          "data": [
+            {
+              "id": "libvirtbridge.action.vmpower.operation",
+              "type": "choice",
+              "label": "Operation",
+              "default": "start",
+              "valueChoices": ["start", "shutdown", "destroy", "reboot", "toggle"]
+            }
+          ]
+        },
+        {
+          "id": "libvirtbridge.action.usbdevice",
+          "name": "USB Device",
+          "prefix": "libvirt Bridge",
+          "type": "communicate",
+          "tryInline": true,
+          "format": "Set USB device {$libvirtbridge.action.usbdevice.device$} to {$libvirtbridge.action.usbdevice.operation$}",
+          "data": [
+            {
+              "id": "libvirtbridge.action.usbdevice.device",
+              "type": "choice",
+              "label": "Device",
+              "default": "",
+              "valueChoices": []
+            },
+            {
+              "id": "libvirtbridge.action.usbdevice.operation",
+              "type": "choice",
+              "label": "Operation",
+              "default": "toggle",
+              "valueChoices": ["attach", "detach", "toggle"]
+            }
+          ]
+        }
+      ],
+      "states": [],
+      "events": []
+    }
+  ]
+}

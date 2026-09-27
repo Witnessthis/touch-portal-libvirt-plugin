@@ -1,0 +1,3 @@
+daemon.log
+__pycache__/
+*.pyc
