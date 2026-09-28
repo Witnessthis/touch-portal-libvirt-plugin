@@ -67,6 +67,11 @@ A button doesn't need the state color wired up (steps 1-5) to use the action —
 steps 6-8 alone are enough for an attach/detach/toggle button with no visual
 feedback.
 
+**USB Device** also supports Touch Portal's **On Hold** tab, so a single button
+can run one operation on a short press and a different one on a long press: add
+it under **On Press** with Operation `attach`, say, and again under **On Hold**
+with Operation `detach` — each placement keeps its own Device/Operation values.
+
 ## Wiring a VM command button
 
 A single button that both shows the VM's power state and sends it a command:
@@ -81,6 +86,12 @@ A single button that both shows the VM's power state and sends it a command:
 
 A button doesn't need the state color wired up (steps 1-5) to use the action —
 steps 6-7 alone are enough for a plain command button with no visual feedback.
+
+**VM Power** also supports Touch Portal's **On Hold** tab, so a single button
+can send one operation on a short press and a different one on a long press:
+add it under **On Press** with Operation `start`, say, and again under **On
+Hold** with Operation `shutdown` — each placement keeps its own Operation
+value.
 
 ### Shutting down a Windows VM from the login screen
 

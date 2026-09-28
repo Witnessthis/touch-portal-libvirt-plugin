@@ -5,8 +5,10 @@ Touch Portal's plugin API is a plain TCP socket carrying newline-delimited JSON
 plugin actually needs: pairing, dynamically creating and removing states at runtime
 (createState/removeState -- no entry.tp "states" array needed), pushing values
 (stateUpdate), keeping an action's "choice" data field in sync with the same
-dynamic device list (choiceUpdate), receiving
-button-triggered actions declared in entry.tp's "actions" array, receiving the
+dynamic device list (choiceUpdate), receiving button-triggered actions declared in
+entry.tp's "actions" array -- both a plain press ("action") and, for an action whose
+entry.tp definition includes "hasHoldFunctionality", a button held past Touch
+Portal's hold threshold ("down") and released again ("up") -- receiving the
 user-configured values of entry.tp's "settings" fields (both the initial "info"
 message sent right after pairing, and the "settings" message sent whenever they're
 changed and saved in the app), and reacting to Touch Portal telling us to shut down
@@ -93,22 +95,34 @@ class TouchPortalClient:
             if self._on_close is not None:
                 self._on_close()
         elif msg_type == "action":
-            if self._on_action is not None:
-                action_id = message.get("actionId", "")
-                # Touch Portal sends action data as a list of {"id": ..., "value":
-                # ...} pairs (one per entry.tp "data" field) -- flatten to a plain
-                # dict keyed by that field's id for convenience.
-                data = {
-                    item["id"]: item.get("value", "")
-                    for item in message.get("data", [])
-                    if "id" in item
-                }
-                self._on_action(action_id, data)
+            self._dispatch_action(message)
+        elif msg_type == "down":
+            # A hold-enabled action's button was held past Touch Portal's hold
+            # threshold -- treated the same as a plain press. Touch Portal
+            # sends "up" when it's released; that's not dispatched to
+            # on_action since no action here has release-specific behavior.
+            self._dispatch_action(message)
+        elif msg_type == "up":
+            pass
         elif msg_type in ("settings", "info"):
             if self._on_settings is not None:
                 settings = self._extract_settings(message)
                 if settings:
                     self._on_settings(settings)
+
+    def _dispatch_action(self, message: dict) -> None:
+        if self._on_action is None:
+            return
+        action_id = message.get("actionId", "")
+        # Touch Portal sends action data as a list of {"id": ..., "value":
+        # ...} pairs (one per entry.tp "data" field) -- flatten to a plain
+        # dict keyed by that field's id for convenience.
+        data = {
+            item["id"]: item.get("value", "")
+            for item in message.get("data", [])
+            if "id" in item
+        }
+        self._on_action(action_id, data)
 
     @staticmethod
     def _extract_settings(message: dict) -> dict[str, str]:
