@@ -6,27 +6,30 @@ Lifecycle:
      needed or read to do this.
   2. Touch Portal sends the plugin's settings (entry.tp's "settings" array, filled
      in under Settings -> Plugins -> libvirt Bridge) right after pairing, and again
-     whenever they're saved. Once "VM Name" and "XML Directory" are both set and
-     valid, and whenever a setting changes after that, a full rescan runs: discover
-     devices from xml_dir, check each against the VM's live XML, check the VM's
-     domstate, push every state. While either is empty, missing or invalid, the
-     plugin is idle: no state is updated, VM Power presses are ignored, and every
-     state is left exactly as it is (nothing is removed), so buttons pick up where
-     they left off once the settings are fixed.
+     whenever they're saved. Once "VM Names" (comma-separated -- this plugin can
+     track several VMs, not just one) and "XML Directory" are both set and valid,
+     and whenever a setting changes after that, a full rescan runs: discover
+     devices from xml_dir, check each against every configured VM's live XML,
+     check every VM's domstate, push every state. While either is empty, missing
+     or invalid, the plugin is idle: no state is updated, VM Power presses are
+     ignored, and every state is left exactly as it is (nothing is removed), so
+     buttons pick up where they left off once the settings are fixed.
   3. `virsh event --all --loop` runs for the plugin's whole lifetime, and every
-     event for the configured VM requests a rescan, so a device attach/detach or VM
-     start/stop is noticed immediately no matter what triggered it (a Touch Portal
-     button, a raw `virsh` command, or virt-manager) -- never dependent on this
-     plugin's own buttons being pressed. It watches every domain rather than just
-     the configured one, so changing VM Name doesn't need a new watcher.
+     event for any configured VM requests a rescan, so a device attach/detach or
+     VM start/stop is noticed immediately no matter what triggered it (a Touch
+     Portal button, a raw `virsh` command, or virt-manager) -- never dependent on
+     this plugin's own buttons being pressed. It watches every domain rather than
+     just the configured ones, so changing VM Names doesn't need a new watcher.
   4. Handle the "VM Power" action (start/shutdown/destroy/reboot/toggle), declared
-     in entry.tp, by running the corresponding `virsh` command against the
-     configured VM -- see lib/vm_control.py.
+     in entry.tp, by running the corresponding `virsh` command against whichever
+     VM the button's "VM" field selects -- see lib/vm_control.py. That field is a
+     `choice` list kept in sync with the VM Names setting via `choiceUpdate`, the
+     same way USB Device's "Device" field is kept in sync with the XML directory.
   5. Handle the "USB Device" action (attach/detach/toggle), also declared in
-     entry.tp: its "Device" field is a `choice` list Touch Portal lets the user
-     pick from when configuring the button, kept in sync with the XML directory
-     via a `choiceUpdate` message sent on every rescan -- the action-data
-     equivalent of createState/removeState above.
+     entry.tp: its "Device" and "VM" fields are `choice` lists Touch Portal lets
+     the user pick from when configuring the button, both kept in sync via
+     `choiceUpdate` messages sent on every rescan -- the action-data equivalent of
+     createState/removeState above.
   6. Exit cleanly on Touch Portal's "closePlugin" message, the connection to it
      dropping, or SIGTERM/SIGINT -- stopping the `virsh event` watcher with it.
 
@@ -94,8 +97,20 @@ def load_plugin_id() -> str:
     return entry["id"]
 
 
+def vm_state_id(vm_name: str) -> str:
+    return f"libvirtbridge.vm.{vm_name}.state"
+
+
+def vm_hold_state_id(vm_name: str) -> str:
+    return f"libvirtbridge.vm.{vm_name}.holdactive"
+
+
 def device_state_id(device_name: str) -> str:
     return f"libvirtbridge.device.{device_name}"
+
+
+def device_hold_state_id(device_name: str) -> str:
+    return f"libvirtbridge.device.{device_name}.holdactive"
 
 
 # The formats Touch Portal's "Background Color (RAW)" accepts: #RGB, #RRGGBB,
@@ -116,32 +131,36 @@ def parse_color(value: str, default: str, setting_name: str) -> str:
     return default
 
 
-VM_STATE_ID = "libvirtbridge.vm.state"
 VM_POWER_ACTION_ID = "libvirtbridge.action.vmpower"
+VM_POWER_VM_FIELD_ID = "libvirtbridge.action.vmpower.vm"
 VM_POWER_OPERATION_FIELD_ID = "libvirtbridge.action.vmpower.operation"
 USB_DEVICE_ACTION_ID = "libvirtbridge.action.usbdevice"
 USB_DEVICE_DEVICE_FIELD_ID = "libvirtbridge.action.usbdevice.device"
+USB_DEVICE_VM_FIELD_ID = "libvirtbridge.action.usbdevice.vm"
 USB_DEVICE_OPERATION_FIELD_ID = "libvirtbridge.action.usbdevice.operation"
-
-# Statically declared in entry.tp's "states" array -- unlike VM_STATE_ID and the
-# per-device states below, these don't depend on settings, so they don't need
-# runtime creation via create_state. Flipped by TouchPortalClient's
-# on_hold_feedback while a hold-enabled button is held past the long-press
-# threshold, purely so a button can be wired to show that visually (e.g. Touch
-# Portal's Full Size Icon toggle) -- what to show is entirely the user's choice
-# in the button editor, not this plugin's concern.
-HOLD_FEEDBACK_STATE_IDS = {
-    VM_POWER_ACTION_ID: "libvirtbridge.vm.holdactive",
-    USB_DEVICE_ACTION_ID: "libvirtbridge.usbdevice.holdactive",
-}
 
 # Must match entry.tp's settings[].name exactly -- that field doubles as the id
 # Touch Portal uses as the key in its "settings"/"info" messages.
-SETTING_VM_NAME = "VM Name"
+SETTING_VM_NAMES = "VM Names"
 SETTING_XML_DIR = "XML Directory"
 SETTING_ATTACHED_COLOR = "Attached Color"
 SETTING_DETACHED_COLOR = "Detached Color"
 SETTING_OTHER_COLOR = "Other Color"
+
+
+def parse_vm_names(raw: str) -> tuple[str, ...]:
+    """Comma-separated VM names, same trick as ddcutil's Video Sources setting --
+    Touch Portal has no list-valued setting type. Unlike that setting, a VM name
+    is both the identifier and what you'd want displayed, so no "id=label"
+    pairing is needed here, just plain names."""
+    seen: set[str] = set()
+    names: list[str] = []
+    for part in raw.split(","):
+        name = part.strip()
+        if name and name not in seen:
+            seen.add(name)
+            names.append(name)
+    return tuple(names)
 
 
 @dataclass(frozen=True)
@@ -149,7 +168,7 @@ class Settings:
     """One consistent set of settings. Replaced as a whole on every change, so a
     rescan that grabs it once can't see half of an update."""
 
-    vm_name: str = ""
+    vm_names: tuple[str, ...] = ()
     xml_dir: Path | None = None
     attached_color: str = DEFAULT_ATTACHED_COLOR
     detached_color: str = DEFAULT_DETACHED_COLOR
@@ -158,8 +177,8 @@ class Settings:
     def problem(self) -> str | None:
         """Why these settings can't be used, or None if they can. Checked on every
         use rather than once, since a directory can disappear at any time."""
-        if not self.vm_name:
-            return f"{SETTING_VM_NAME!r} is not set"
+        if not self.vm_names:
+            return f"{SETTING_VM_NAMES!r} has no valid entries"
         if self.xml_dir is None:
             return f"{SETTING_XML_DIR!r} is not set"
         if not self.xml_dir.is_dir():
@@ -180,6 +199,12 @@ class Bridge:
         )
         # Only touched by rescan(), which only ever runs on the rescan worker.
         self._known_states: set[str] = set()
+        # Long-press feedback states: also only touched by rescan() (created
+        # once, on first sight of a VM/device, and never removed or re-written --
+        # see _ensure_hold_state). _on_hold_feedback runs on other threads, but
+        # only ever calls update_state on an id already created here, so it never
+        # touches this set and needs no lock of its own.
+        self._known_hold_states: set[str] = set()
         self._power_lock = threading.Lock()
         self._usb_lock = threading.Lock()
         self._rescan_event = threading.Event()
@@ -197,7 +222,7 @@ class Bridge:
     def _on_settings(self, values: dict[str, str]) -> None:
         xml_dir = values.get(SETTING_XML_DIR, "").strip()
         new = Settings(
-            vm_name=values.get(SETTING_VM_NAME, "").strip(),
+            vm_names=parse_vm_names(values.get(SETTING_VM_NAMES, "")),
             xml_dir=Path(xml_dir).expanduser() if xml_dir else None,
             attached_color=parse_color(
                 values.get(SETTING_ATTACHED_COLOR, ""), DEFAULT_ATTACHED_COLOR,
@@ -216,9 +241,9 @@ class Bridge:
         self.settings = new
 
         log.info(
-            "settings received: VM Name=%r XML Directory=%r Attached Color=%s "
+            "settings received: VM Names=%r XML Directory=%r Attached Color=%s "
             "Detached Color=%s Other Color=%s",
-            new.vm_name, new.xml_dir, new.attached_color, new.detached_color,
+            new.vm_names, new.xml_dir, new.attached_color, new.detached_color,
             new.other_color,
         )
 
@@ -241,17 +266,28 @@ class Bridge:
         else:
             log.warning("received unknown action id %r", action_id)
 
-    def _on_hold_feedback(self, action_id: str, active: bool) -> None:
-        state_id = HOLD_FEEDBACK_STATE_IDS.get(action_id)
-        if state_id is not None:
-            self.tp.update_state(state_id, "1" if active else "0")
+    def _on_hold_feedback(self, action_id: str, data: dict[str, str], active: bool) -> None:
+        # Whichever VM/device this specific button's data selects -- only that
+        # one's state is touched, not every VM Power / USB Device button.
+        value = "1" if active else "0"
+        if action_id == VM_POWER_ACTION_ID:
+            vm_name = data.get(VM_POWER_VM_FIELD_ID, "")
+            if vm_name:
+                self.tp.update_state(vm_hold_state_id(vm_name), value)
+        elif action_id == USB_DEVICE_ACTION_ID:
+            device_name = data.get(USB_DEVICE_DEVICE_FIELD_ID, "")
+            if device_name:
+                self.tp.update_state(device_hold_state_id(device_name), value)
 
     def _on_power_action(self, data: dict[str, str]) -> None:
         problem = self.settings.problem()
         if problem:
             log.warning("VM Power action ignored -- %s", problem)
             return
-        vm_name = self.settings.vm_name
+        vm_name = data.get(VM_POWER_VM_FIELD_ID, "")
+        if vm_name not in self.settings.vm_names:
+            log.error("VM Power action ignored -- unknown VM %r", vm_name)
+            return
 
         operation = data.get(VM_POWER_OPERATION_FIELD_ID, "")
         # A shutdown can wait several seconds before resending (see vm_control),
@@ -290,22 +326,29 @@ class Bridge:
             return
         operation = data.get(USB_DEVICE_OPERATION_FIELD_ID, "")
         device_name = data.get(USB_DEVICE_DEVICE_FIELD_ID, "")
+        vm_name = data.get(USB_DEVICE_VM_FIELD_ID, "")
+        if vm_name not in self.settings.vm_names:
+            log.error("USB Device action ignored -- unknown VM %r", vm_name)
+            return
         # Run off the Touch Portal read thread, same reason as VM Power.
         threading.Thread(
-            target=self._run_usb_action, args=(operation, device_name), daemon=True
+            target=self._run_usb_action, args=(operation, device_name, vm_name), daemon=True
         ).start()
 
-    def _run_usb_action(self, operation: str, device_name: str) -> None:
+    def _run_usb_action(self, operation: str, device_name: str, vm_name: str) -> None:
         # Serialize presses, so two quick attach/detach presses on different
         # devices can't race each other's virsh calls against the same VM.
         with self._usb_lock:
-            self._run_usb_action_locked(operation, device_name)
+            self._run_usb_action_locked(operation, device_name, vm_name)
 
-    def _run_usb_action_locked(self, operation: str, device_name: str) -> None:
+    def _run_usb_action_locked(self, operation: str, device_name: str, vm_name: str) -> None:
         settings = self.settings
         problem = settings.problem()
         if problem:
             log.warning("USB Device action ignored -- %s", problem)
+            return
+        if vm_name not in settings.vm_names:
+            log.error("USB Device action ignored -- unknown VM %r", vm_name)
             return
 
         # Re-read the directory rather than trust a snapshot from the last
@@ -317,8 +360,8 @@ class Bridge:
             log.error("USB Device action ignored -- unknown device %r", device_name)
             return
 
-        log.info("USB Device action -> %s %s", operation, device.name)
-        result = vm_control.run_usb_operation(operation, settings.vm_name, device)
+        log.info("USB Device action -> %s %s on %s", operation, device.name, vm_name)
+        result = vm_control.run_usb_operation(operation, vm_name, device)
         resolved = (
             f"{operation} -> {result.operation}" if result.operation != operation else operation
         )
@@ -348,41 +391,66 @@ class Bridge:
             log.info("rescan skipped -- %s", problem)
             return
 
-        domstate = state_detect.vm_domstate(settings.vm_name)
-        vm_color = {
-            state_detect.POWER_ON: settings.attached_color,
-            state_detect.POWER_OFF: settings.detached_color,
-        }.get(state_detect.power_of(domstate), settings.other_color)
-        self._set_state(VM_STATE_ID, "VM power color", vm_color)
-        log.info("VM %s -> %s (%s)", settings.vm_name, domstate, vm_color)
-
-        attached_ids = state_detect.attached_usb_ids(settings.vm_name)
         current: set[str] = set()
+
+        # attached_usb_ids per VM, queried once each and reused below -- a device
+        # counts as "attached" if it's attached to *any* configured VM (a USB
+        # passthrough device is normally only ever handed to one at a time, so
+        # this doesn't try to track a full per-(device, VM) matrix).
+        attached_by_vm: dict[str, set[tuple[int, int]] | None] = {}
+        for vm_name in settings.vm_names:
+            domstate = state_detect.vm_domstate(vm_name)
+            vm_color = {
+                state_detect.POWER_ON: settings.attached_color,
+                state_detect.POWER_OFF: settings.detached_color,
+            }.get(state_detect.power_of(domstate), settings.other_color)
+            state_id = vm_state_id(vm_name)
+            current.add(state_id)
+            self._set_state(state_id, f"{vm_name} power color", vm_color)
+            self._ensure_hold_state(vm_hold_state_id(vm_name), f"{vm_name} long-press active")
+            log.info("VM %s -> %s (%s)", vm_name, domstate, vm_color)
+            attached_by_vm[vm_name] = state_detect.attached_usb_ids(vm_name)
+
+        all_unknown = bool(attached_by_vm) and all(ids is None for ids in attached_by_vm.values())
+        attached_ids: set[tuple[int, int]] = set()
+        for ids in attached_by_vm.values():
+            if ids:
+                attached_ids |= ids
+
         device_names: list[str] = []
         for device in discover_devices(settings.xml_dir):
             state_id = device_state_id(device.name)
             current.add(state_id)
             device_names.append(device.name)
-            if attached_ids is None:
+            if all_unknown:
                 status, color = "unknown", settings.other_color
             elif (device.vendor_id, device.product_id) in attached_ids:
                 status, color = "attached", settings.attached_color
             else:
                 status, color = "detached", settings.detached_color
             self._set_state(state_id, f"{device.name} color", color)
+            self._ensure_hold_state(
+                device_hold_state_id(device.name), f"{device.name} long-press active"
+            )
             log.info("device %s -> %s (%s)", device.name, status, color)
 
-        # A device whose XML file is gone has nothing left to show -- remove its
-        # state so Touch Portal's list of states matches the directory.
-        for state_id in sorted(self._known_states - current - {VM_STATE_ID}):
+        # A VM no longer in the setting or a device whose XML file is gone has
+        # nothing left to show -- remove its state so Touch Portal's list matches
+        # current settings. Long-press feedback states are never removed here
+        # (see _ensure_hold_state) -- an orphaned one is harmless.
+        for state_id in sorted(self._known_states - current):
             self.tp.remove_state(state_id)
             self._known_states.discard(state_id)
-            log.info("removed state %s -- its XML file is gone", state_id)
+            log.info("removed state %s -- no longer configured", state_id)
 
-        # Keeps the USB Device action's "Device" dropdown in sync with the XML
-        # directory, the same way createState/removeState above keep the state
-        # list in sync -- so a button's action list picks up new/removed devices
-        # without needing entry.tp to list them statically.
+        # Keeps the VM Power/USB Device actions' "VM" dropdowns, and USB Device's
+        # "Device" dropdown, in sync with settings/the XML directory, the same way
+        # createState/removeState above keep the state list in sync -- so a
+        # button's action list picks up new/removed VMs or devices without
+        # needing entry.tp to list them statically.
+        vm_names = sorted(settings.vm_names)
+        self.tp.update_choices(VM_POWER_VM_FIELD_ID, vm_names)
+        self.tp.update_choices(USB_DEVICE_VM_FIELD_ID, vm_names)
         self.tp.update_choices(USB_DEVICE_DEVICE_FIELD_ID, sorted(device_names))
 
     def _set_state(self, state_id: str, description: str, value: str) -> None:
@@ -393,6 +461,17 @@ class Bridge:
             self.tp.create_state(state_id, description, "")
             self._known_states.add(state_id)
         self.tp.update_state(state_id, value)
+
+    def _ensure_hold_state(self, state_id: str, description: str) -> None:
+        """Like _set_state's create-if-unknown half, but never pushes a value --
+        a rescan can run at any time, including while a button is genuinely being
+        held, and must not stomp on the "1" _on_hold_feedback is showing mid-hold.
+        Only needs to exist by the time a button can reference it, which rescan
+        already guarantees by running before the VM/device shows up in any
+        dropdown."""
+        if state_id not in self._known_hold_states:
+            self.tp.create_state(state_id, description, "0")
+            self._known_hold_states.add(state_id)
 
     def request_rescan(self) -> None:
         self._rescan_event.set()
@@ -413,7 +492,7 @@ class Bridge:
 
     def _virsh_event_loop(self) -> None:
         """Runs `virsh event --all --loop` for every domain and requests a rescan
-        on each event for the configured VM.
+        on each event for any configured VM.
 
         Restarts the subprocess with a short backoff if it ever exits (e.g.
         libvirtd restarting).
@@ -448,12 +527,14 @@ class Bridge:
     def _handle_event_line(self, line: str) -> None:
         if not line:
             return
-        vm_name = self.settings.vm_name
         # Every event line names its domain in quotes, followed by either
         # ": <details>" or nothing (e.g. "event 'reboot' for domain 'vm'").
         # Matching the whole quoted name keeps "vm" from matching "vm-2".
-        tag = f" for domain '{vm_name}'"
-        if vm_name and (line.endswith(tag) or f"{tag}: " in line):
+        matched = any(
+            line.endswith(f" for domain '{vm_name}'") or f" for domain '{vm_name}': " in line
+            for vm_name in self.settings.vm_names
+        )
+        if matched:
             log.info("virsh event: %s", line)
             self.request_rescan()
         elif " for domain '" not in line:

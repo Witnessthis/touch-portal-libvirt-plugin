@@ -33,11 +33,19 @@ threshold was reached, while it's still held -- e.g. Touch Portal's Full Size
 Icon toggle, wired in the button editor off a state this plugin exposes. That
 does need a real timer (there's no other way to notice "still down after
 LONG_PRESS_SECONDS" without polling): "down" schedules one, which calls
-on_hold_feedback(action_id, True) if it fires; "up" always cancels it and calls
-on_hold_feedback(action_id, False) to reset. This is cosmetic only -- a tiny
-race between an "up" arriving right as the timer fires can in principle leave a
-stray True after a False, self-correcting on the next press -- so it's kept
-separate from the action-dispatch deadline above, which has no such tolerance.
+on_hold_feedback(action_id, data, True) if it fires; "up" always cancels it and
+calls on_hold_feedback(action_id, data, False) to reset. This is cosmetic only
+-- a tiny race between an "up" arriving right as the timer fires can in
+principle leave a stray True after a False, self-correcting on the next press
+-- so it's kept separate from the action-dispatch deadline above, which has no
+such tolerance.
+
+Pending presses are keyed by (actionId, data) rather than actionId alone --
+several buttons can share one hold-enabled action (e.g. this plugin's VM Power
+across several VMs, or USB Device across several devices), distinguished only
+by their configured data values, which "down"/"up" echo back unchanged. Keying
+on actionId alone would let one button's "down" clobber another's pending
+state if both were held at once.
 
 Message shapes are as sent by Touch Portal 4.6.1. The port can be overridden with
 the TP_PORT environment variable (see entry.tp's plugin_start_cmd).
@@ -72,7 +80,7 @@ class TouchPortalClient:
         on_close: Callable[[], None] | None = None,
         on_action: Callable[[str, dict[str, str]], None] | None = None,
         on_settings: Callable[[dict[str, str]], None] | None = None,
-        on_hold_feedback: Callable[[str, bool], None] | None = None,
+        on_hold_feedback: Callable[[str, dict[str, str], bool], None] | None = None,
     ) -> None:
         self.plugin_id = plugin_id
         self.host = host
@@ -85,12 +93,10 @@ class TouchPortalClient:
         self._file = None
         self._lock = threading.Lock()
         self._reader_thread: threading.Thread | None = None
-        # Pending presses, keyed by actionId -- Touch Portal's down/up messages
-        # carry no per-press instance id, so two buttons sharing the same
-        # hold-enabled action held down at once would collide here; not a concern
-        # for this plugin's small, fixed action set.
+        # Pending presses, keyed by (actionId, data) -- see the module docstring
+        # for why data has to be part of the key.
         self._hold_lock = threading.Lock()
-        self._pending_holds: dict[str, tuple[float, threading.Timer]] = {}
+        self._pending_holds: dict[tuple, tuple[float, threading.Timer]] = {}
 
     def connect_and_pair(self) -> None:
         self._sock = socket.create_connection((self.host, self.port), timeout=10)
@@ -150,56 +156,69 @@ class TouchPortalClient:
         held long enough to count as a long press on release, and schedules the
         feedback timer that fires if it's still down at that point."""
         action_id = message.get("actionId", "")
+        data = self._flatten_data(message)
+        key = self._hold_key(action_id, data)
         deadline = time.monotonic() + LONG_PRESS_SECONDS
-        timer = threading.Timer(LONG_PRESS_SECONDS, self._fire_hold_feedback, args=(action_id,))
+        timer = threading.Timer(
+            LONG_PRESS_SECONDS, self._fire_hold_feedback, args=(key, action_id, data)
+        )
         timer.daemon = True
         with self._hold_lock:
             # Replace rather than stack, in case a stray "down" ever arrives
             # without a matching "up" first.
-            stale = self._pending_holds.pop(action_id, None)
-            self._pending_holds[action_id] = (deadline, timer)
+            stale = self._pending_holds.pop(key, None)
+            self._pending_holds[key] = (deadline, timer)
         if stale is not None:
             stale[1].cancel()
         timer.start()
 
-    def _fire_hold_feedback(self, action_id: str) -> None:
+    def _fire_hold_feedback(self, key: tuple, action_id: str, data: dict[str, str]) -> None:
         """Runs on the timer's own thread, LONG_PRESS_SECONDS after "down" -- only
         signals feedback if the button's still down (nothing popped it first)."""
         with self._hold_lock:
-            if action_id not in self._pending_holds:
+            if key not in self._pending_holds:
                 return  # already released -- "up" got there first
         if self._on_hold_feedback is not None:
-            self._on_hold_feedback(action_id, True)
+            self._on_hold_feedback(action_id, data, True)
 
     def _maybe_dispatch_long_press(self, message: dict) -> None:
         """The button was released: cancels the feedback timer and resets its
         signal, then fires the action only if it was still down past its
         deadline -- a quick tap (deadline not yet reached) does nothing."""
         action_id = message.get("actionId", "")
+        data = self._flatten_data(message)
+        key = self._hold_key(action_id, data)
         with self._hold_lock:
-            pending = self._pending_holds.pop(action_id, None)
+            pending = self._pending_holds.pop(key, None)
         if pending is None:
             return
         deadline, timer = pending
         timer.cancel()
         if self._on_hold_feedback is not None:
-            self._on_hold_feedback(action_id, False)
+            self._on_hold_feedback(action_id, data, False)
         if time.monotonic() >= deadline:
             self._dispatch_action(message)
+
+    @staticmethod
+    def _flatten_data(message: dict) -> dict[str, str]:
+        # Touch Portal sends action data as a list of {"id": ..., "value":
+        # ...} pairs (one per entry.tp "data" field) -- flatten to a plain
+        # dict keyed by that field's id for convenience.
+        return {
+            item["id"]: item.get("value", "")
+            for item in message.get("data", [])
+            if "id" in item
+        }
+
+    @staticmethod
+    def _hold_key(action_id: str, data: dict[str, str]) -> tuple:
+        return (action_id, tuple(sorted(data.items())))
 
     def _dispatch_action(self, message: dict) -> None:
         if self._on_action is None:
             return
         action_id = message.get("actionId", "")
-        # Touch Portal sends action data as a list of {"id": ..., "value":
-        # ...} pairs (one per entry.tp "data" field) -- flatten to a plain
-        # dict keyed by that field's id for convenience.
-        data = {
-            item["id"]: item.get("value", "")
-            for item in message.get("data", [])
-            if "id" in item
-        }
-        self._on_action(action_id, data)
+        self._on_action(action_id, self._flatten_data(message))
 
     @staticmethod
     def _extract_settings(message: dict) -> dict[str, str]:

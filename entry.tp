@@ -1,6 +1,6 @@
 {
   "sdk": 13,
-  "version": 103,
+  "version": 104,
   "name": "libvirt Bridge",
   "id": "libvirtbridge",
   "plugin_start_cmd": "env TP_PORT=12136 python3 %TP_PLUGIN_FOLDER%libvirt-bridge/bin/daemon.py",
@@ -10,7 +10,7 @@
   },
   "settings": [
     {
-      "name": "VM Name",
+      "name": "VM Names",
       "type": "text",
       "default": ""
     },
@@ -47,8 +47,15 @@
           "type": "communicate",
           "tryInline": true,
           "hasHoldFunctionality": true,
-          "format": "Set VM power to {$libvirtbridge.action.vmpower.operation$}",
+          "format": "Set VM {$libvirtbridge.action.vmpower.vm$} power to {$libvirtbridge.action.vmpower.operation$}",
           "data": [
+            {
+              "id": "libvirtbridge.action.vmpower.vm",
+              "type": "choice",
+              "label": "VM",
+              "default": "",
+              "valueChoices": []
+            },
             {
               "id": "libvirtbridge.action.vmpower.operation",
               "type": "choice",
@@ -65,12 +72,19 @@
           "type": "communicate",
           "tryInline": true,
           "hasHoldFunctionality": true,
-          "format": "Set USB device {$libvirtbridge.action.usbdevice.device$} to {$libvirtbridge.action.usbdevice.operation$}",
+          "format": "Set USB device {$libvirtbridge.action.usbdevice.device$} on VM {$libvirtbridge.action.usbdevice.vm$} to {$libvirtbridge.action.usbdevice.operation$}",
           "data": [
             {
               "id": "libvirtbridge.action.usbdevice.device",
               "type": "choice",
               "label": "Device",
+              "default": "",
+              "valueChoices": []
+            },
+            {
+              "id": "libvirtbridge.action.usbdevice.vm",
+              "type": "choice",
+              "label": "VM",
               "default": "",
               "valueChoices": []
             },
@@ -84,20 +98,7 @@
           ]
         }
       ],
-      "states": [
-        {
-          "id": "libvirtbridge.vm.holdactive",
-          "type": "text",
-          "desc": "VM Power long-press active",
-          "default": "0"
-        },
-        {
-          "id": "libvirtbridge.usbdevice.holdactive",
-          "type": "text",
-          "desc": "USB Device long-press active",
-          "default": "0"
-        }
-      ],
+      "states": [],
       "events": []
     }
   ]
