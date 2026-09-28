@@ -25,25 +25,22 @@ Lifecycle:
      VM the button's "VM" field selects -- see lib/vm_control.py. Its "VM" field
      is a `choice` list kept in sync with the VM Names setting via `choiceUpdate`,
      the same way USB Device's "Device" field is kept in sync with the XML
-     directory. Two further entry.tp actions, "VM Power (Before Threshold)" and
-     "VM Power (After Threshold)", share the same VM/Operation fields plus a
-     "Threshold (ms)" one, and run only if the button was released before/after
-     that many milliseconds -- see _on_hold_release. Deciding whether a press
-     "counts" is this plugin's job entirely: Touch Portal reports how long a
-     hold-enabled button was held with no minimum built in (see lib/tp_client.py),
-     so an ordinary "VM Power" placed under On Press still just fires immediately,
-     unconditionally, same as ever.
-  5. Handle the "USB Device" action (attach/detach/toggle) the same way, plus its
-     own Before/After Threshold pair -- all sharing Device/VM/Operation fields
-     kept in sync via `choiceUpdate` sent on every rescan.
+     directory. This is a plain, always-fires action -- for a button that only
+     does something on a genuine long press (or only on a quick tap, suppressing
+     a long press), see the separate touch-portal-holdtiming-plugin project
+     instead. Touch Portal has no way to gate a plain action by hold duration
+     (there's no minimum enforced, and On Hold only ever holds a single action
+     per button -- see lib/tp_client.py's history for why an in-plugin attempt
+     at this was abandoned), so this plugin no longer tries.
+  5. Handle the "USB Device" action (attach/detach/toggle) the same way, its
+     Device/VM fields kept in sync via `choiceUpdate` sent on every rescan.
   6. Exit cleanly on Touch Portal's "closePlugin" message, the connection to it
      dropping, or SIGTERM/SIGINT -- stopping the `virsh event` watcher with it.
 
 This process never writes to, executes, or otherwise modifies anything in the
 configured xml_dir -- it only reads the *.xml hostdev descriptors there. The VM
-Power and USB Device actions (and their Before/After Threshold variants) are the
-only places this plugin changes anything outside itself; every other code path is
-read-only.
+Power and USB Device actions are the only places this plugin changes anything
+outside itself; every other code path is read-only.
 
 The one thing that can't come from Touch Portal's own settings UI is the port to
 connect to it on in the first place -- that's needed before any pairing happens, so
@@ -108,16 +105,8 @@ def vm_state_id(vm_name: str) -> str:
     return f"libvirtbridge.vm.{vm_name}.state"
 
 
-def vm_hold_state_id(vm_name: str) -> str:
-    return f"libvirtbridge.vm.{vm_name}.holdactive"
-
-
 def device_state_id(device_name: str) -> str:
     return f"libvirtbridge.device.{device_name}"
-
-
-def device_hold_state_id(device_name: str) -> str:
-    return f"libvirtbridge.device.{device_name}.holdactive"
 
 
 # The formats Touch Portal's "Background Color (RAW)" accepts: #RGB, #RRGGBB,
@@ -138,61 +127,13 @@ def parse_color(value: str, default: str, setting_name: str) -> str:
     return default
 
 
-# Default entry.tp gives a "Threshold (ms)" field of 1000 -- this is only a
-# fallback for a value that somehow doesn't parse as a positive number.
-DEFAULT_THRESHOLD_MS = 1000.0
-
-
-def parse_threshold_ms(raw: str) -> float:
-    try:
-        value = float(raw)
-    except (TypeError, ValueError):
-        return DEFAULT_THRESHOLD_MS
-    return value if value > 0 else DEFAULT_THRESHOLD_MS
-
-
 VM_POWER_ACTION_ID = "libvirtbridge.action.vmpower"
 VM_POWER_VM_FIELD_ID = "libvirtbridge.action.vmpower.vm"
 VM_POWER_OPERATION_FIELD_ID = "libvirtbridge.action.vmpower.operation"
-
-VM_POWER_BEFORE_ACTION_ID = "libvirtbridge.action.vmpower.before"
-VM_POWER_BEFORE_VM_FIELD_ID = "libvirtbridge.action.vmpower.before.vm"
-VM_POWER_BEFORE_OPERATION_FIELD_ID = "libvirtbridge.action.vmpower.before.operation"
-VM_POWER_BEFORE_THRESHOLD_FIELD_ID = "libvirtbridge.action.vmpower.before.threshold"
-
-VM_POWER_AFTER_ACTION_ID = "libvirtbridge.action.vmpower.after"
-VM_POWER_AFTER_VM_FIELD_ID = "libvirtbridge.action.vmpower.after.vm"
-VM_POWER_AFTER_OPERATION_FIELD_ID = "libvirtbridge.action.vmpower.after.operation"
-VM_POWER_AFTER_THRESHOLD_FIELD_ID = "libvirtbridge.action.vmpower.after.threshold"
-
 USB_DEVICE_ACTION_ID = "libvirtbridge.action.usbdevice"
 USB_DEVICE_DEVICE_FIELD_ID = "libvirtbridge.action.usbdevice.device"
 USB_DEVICE_VM_FIELD_ID = "libvirtbridge.action.usbdevice.vm"
 USB_DEVICE_OPERATION_FIELD_ID = "libvirtbridge.action.usbdevice.operation"
-
-USB_DEVICE_BEFORE_ACTION_ID = "libvirtbridge.action.usbdevice.before"
-USB_DEVICE_BEFORE_DEVICE_FIELD_ID = "libvirtbridge.action.usbdevice.before.device"
-USB_DEVICE_BEFORE_VM_FIELD_ID = "libvirtbridge.action.usbdevice.before.vm"
-USB_DEVICE_BEFORE_OPERATION_FIELD_ID = "libvirtbridge.action.usbdevice.before.operation"
-USB_DEVICE_BEFORE_THRESHOLD_FIELD_ID = "libvirtbridge.action.usbdevice.before.threshold"
-
-USB_DEVICE_AFTER_ACTION_ID = "libvirtbridge.action.usbdevice.after"
-USB_DEVICE_AFTER_DEVICE_FIELD_ID = "libvirtbridge.action.usbdevice.after.device"
-USB_DEVICE_AFTER_VM_FIELD_ID = "libvirtbridge.action.usbdevice.after.vm"
-USB_DEVICE_AFTER_OPERATION_FIELD_ID = "libvirtbridge.action.usbdevice.after.operation"
-USB_DEVICE_AFTER_THRESHOLD_FIELD_ID = "libvirtbridge.action.usbdevice.after.threshold"
-
-# Every entry.tp data field id, across all three VM Power/USB Device variants,
-# that should track the "VM Names" setting -- kept in sync via choiceUpdate on
-# every rescan (see rescan()). Each variant needs its own id updated separately;
-# Touch Portal's choiceUpdate targets one field id at a time.
-VM_CHOICE_FIELD_IDS = (
-    VM_POWER_VM_FIELD_ID, VM_POWER_BEFORE_VM_FIELD_ID, VM_POWER_AFTER_VM_FIELD_ID,
-    USB_DEVICE_VM_FIELD_ID, USB_DEVICE_BEFORE_VM_FIELD_ID, USB_DEVICE_AFTER_VM_FIELD_ID,
-)
-DEVICE_CHOICE_FIELD_IDS = (
-    USB_DEVICE_DEVICE_FIELD_ID, USB_DEVICE_BEFORE_DEVICE_FIELD_ID, USB_DEVICE_AFTER_DEVICE_FIELD_ID,
-)
 
 # Must match entry.tp's settings[].name exactly -- that field doubles as the id
 # Touch Portal uses as the key in its "settings"/"info" messages.
@@ -250,17 +191,9 @@ class Bridge:
             on_close=self._on_tp_close,
             on_action=self._on_action,
             on_settings=self._on_settings,
-            on_hold_release=self._on_hold_release,
-            on_hold_feedback=self._on_hold_feedback,
         )
         # Only touched by rescan(), which only ever runs on the rescan worker.
         self._known_states: set[str] = set()
-        # Long-press feedback states: also only touched by rescan() (created
-        # once, on first sight of a VM/device, and never removed or re-written --
-        # see _ensure_hold_state). _on_hold_feedback runs on other threads, but
-        # only ever calls update_state on an id already created here, so it never
-        # touches this set and needs no lock of its own.
-        self._known_hold_states: set[str] = set()
         self._power_lock = threading.Lock()
         self._usb_lock = threading.Lock()
         self._rescan_event = threading.Event()
@@ -316,77 +249,23 @@ class Bridge:
 
     def _on_action(self, action_id: str, data: dict[str, str]) -> None:
         if action_id == VM_POWER_ACTION_ID:
-            self._dispatch_vm_power(
-                data.get(VM_POWER_VM_FIELD_ID, ""), data.get(VM_POWER_OPERATION_FIELD_ID, "")
-            )
+            self._on_power_action(data)
         elif action_id == USB_DEVICE_ACTION_ID:
-            self._dispatch_usb_device(
-                data.get(USB_DEVICE_DEVICE_FIELD_ID, ""),
-                data.get(USB_DEVICE_VM_FIELD_ID, ""),
-                data.get(USB_DEVICE_OPERATION_FIELD_ID, ""),
-            )
+            self._on_usb_action(data)
         else:
             log.warning("received unknown action id %r", action_id)
 
-    def _on_hold_release(self, action_id: str, data: dict[str, str], held_seconds: float) -> None:
-        """A Before/After Threshold button was released. tp_client.py has no idea
-        what any of this means -- it just reports how long the button was held;
-        this is where that turns into "should this actually run"."""
-        held_ms = held_seconds * 1000.0
-        if action_id == VM_POWER_BEFORE_ACTION_ID:
-            threshold_ms = parse_threshold_ms(data.get(VM_POWER_BEFORE_THRESHOLD_FIELD_ID, ""))
-            if held_ms < threshold_ms:
-                self._dispatch_vm_power(
-                    data.get(VM_POWER_BEFORE_VM_FIELD_ID, ""),
-                    data.get(VM_POWER_BEFORE_OPERATION_FIELD_ID, ""),
-                )
-        elif action_id == VM_POWER_AFTER_ACTION_ID:
-            threshold_ms = parse_threshold_ms(data.get(VM_POWER_AFTER_THRESHOLD_FIELD_ID, ""))
-            if held_ms >= threshold_ms:
-                self._dispatch_vm_power(
-                    data.get(VM_POWER_AFTER_VM_FIELD_ID, ""),
-                    data.get(VM_POWER_AFTER_OPERATION_FIELD_ID, ""),
-                )
-        elif action_id == USB_DEVICE_BEFORE_ACTION_ID:
-            threshold_ms = parse_threshold_ms(data.get(USB_DEVICE_BEFORE_THRESHOLD_FIELD_ID, ""))
-            if held_ms < threshold_ms:
-                self._dispatch_usb_device(
-                    data.get(USB_DEVICE_BEFORE_DEVICE_FIELD_ID, ""),
-                    data.get(USB_DEVICE_BEFORE_VM_FIELD_ID, ""),
-                    data.get(USB_DEVICE_BEFORE_OPERATION_FIELD_ID, ""),
-                )
-        elif action_id == USB_DEVICE_AFTER_ACTION_ID:
-            threshold_ms = parse_threshold_ms(data.get(USB_DEVICE_AFTER_THRESHOLD_FIELD_ID, ""))
-            if held_ms >= threshold_ms:
-                self._dispatch_usb_device(
-                    data.get(USB_DEVICE_AFTER_DEVICE_FIELD_ID, ""),
-                    data.get(USB_DEVICE_AFTER_VM_FIELD_ID, ""),
-                    data.get(USB_DEVICE_AFTER_OPERATION_FIELD_ID, ""),
-                )
-
-    def _on_hold_feedback(self, action_id: str, data: dict[str, str], active: bool) -> None:
-        # Only the After Threshold actions get a feedback state -- nothing
-        # meaningful to show mid-hold for a Before Threshold button (it either
-        # already missed its window or hasn't yet, and either way there's
-        # nothing for the user to usefully react to while still holding).
-        value = "1" if active else "0"
-        if action_id == VM_POWER_AFTER_ACTION_ID:
-            vm_name = data.get(VM_POWER_AFTER_VM_FIELD_ID, "")
-            if vm_name:
-                self.tp.update_state(vm_hold_state_id(vm_name), value)
-        elif action_id == USB_DEVICE_AFTER_ACTION_ID:
-            device_name = data.get(USB_DEVICE_AFTER_DEVICE_FIELD_ID, "")
-            if device_name:
-                self.tp.update_state(device_hold_state_id(device_name), value)
-
-    def _dispatch_vm_power(self, vm_name: str, operation: str) -> None:
+    def _on_power_action(self, data: dict[str, str]) -> None:
         problem = self.settings.problem()
         if problem:
             log.warning("VM Power action ignored -- %s", problem)
             return
+        vm_name = data.get(VM_POWER_VM_FIELD_ID, "")
         if vm_name not in self.settings.vm_names:
             log.error("VM Power action ignored -- unknown VM %r", vm_name)
             return
+
+        operation = data.get(VM_POWER_OPERATION_FIELD_ID, "")
         # A shutdown can wait several seconds before resending (see vm_control),
         # and this callback runs on the thread that reads from Touch Portal -- so
         # do the work elsewhere to keep the plugin responsive meanwhile.
@@ -416,11 +295,14 @@ class Bridge:
         # reflects the command's outcome without waiting on that event to arrive.
         self.request_rescan()
 
-    def _dispatch_usb_device(self, device_name: str, vm_name: str, operation: str) -> None:
+    def _on_usb_action(self, data: dict[str, str]) -> None:
         problem = self.settings.problem()
         if problem:
             log.warning("USB Device action ignored -- %s", problem)
             return
+        operation = data.get(USB_DEVICE_OPERATION_FIELD_ID, "")
+        device_name = data.get(USB_DEVICE_DEVICE_FIELD_ID, "")
+        vm_name = data.get(USB_DEVICE_VM_FIELD_ID, "")
         if vm_name not in self.settings.vm_names:
             log.error("USB Device action ignored -- unknown VM %r", vm_name)
             return
@@ -501,7 +383,6 @@ class Bridge:
             state_id = vm_state_id(vm_name)
             current.add(state_id)
             self._set_state(state_id, f"{vm_name} power color", vm_color)
-            self._ensure_hold_state(vm_hold_state_id(vm_name), f"{vm_name} long-press active")
             log.info("VM %s -> %s (%s)", vm_name, domstate, vm_color)
             attached_by_vm[vm_name] = state_detect.attached_usb_ids(vm_name)
 
@@ -523,30 +404,25 @@ class Bridge:
             else:
                 status, color = "detached", settings.detached_color
             self._set_state(state_id, f"{device.name} color", color)
-            self._ensure_hold_state(
-                device_hold_state_id(device.name), f"{device.name} long-press active"
-            )
             log.info("device %s -> %s (%s)", device.name, status, color)
 
         # A VM no longer in the setting or a device whose XML file is gone has
         # nothing left to show -- remove its state so Touch Portal's list matches
-        # current settings. Long-press feedback states are never removed here
-        # (see _ensure_hold_state) -- an orphaned one is harmless.
+        # current settings.
         for state_id in sorted(self._known_states - current):
             self.tp.remove_state(state_id)
             self._known_states.discard(state_id)
             log.info("removed state %s -- no longer configured", state_id)
 
-        # Keeps every VM Power/USB Device variant's "VM" dropdown, and every USB
-        # Device variant's "Device" dropdown, in sync with settings/the XML
-        # directory, the same way createState/removeState above keep the state
-        # list in sync -- so a button's action list picks up new/removed VMs or
-        # devices without needing entry.tp to list them statically.
+        # Keeps the VM Power/USB Device actions' "VM" dropdowns, and USB Device's
+        # "Device" dropdown, in sync with settings/the XML directory, the same way
+        # createState/removeState above keep the state list in sync -- so a
+        # button's action list picks up new/removed VMs or devices without
+        # needing entry.tp to list them statically.
         vm_names = sorted(settings.vm_names)
-        for field_id in VM_CHOICE_FIELD_IDS:
-            self.tp.update_choices(field_id, vm_names)
-        for field_id in DEVICE_CHOICE_FIELD_IDS:
-            self.tp.update_choices(field_id, sorted(device_names))
+        self.tp.update_choices(VM_POWER_VM_FIELD_ID, vm_names)
+        self.tp.update_choices(USB_DEVICE_VM_FIELD_ID, vm_names)
+        self.tp.update_choices(USB_DEVICE_DEVICE_FIELD_ID, sorted(device_names))
 
     def _set_state(self, state_id: str, description: str, value: str) -> None:
         if state_id not in self._known_states:
@@ -556,17 +432,6 @@ class Bridge:
             self.tp.create_state(state_id, description, "")
             self._known_states.add(state_id)
         self.tp.update_state(state_id, value)
-
-    def _ensure_hold_state(self, state_id: str, description: str) -> None:
-        """Like _set_state's create-if-unknown half, but never pushes a value --
-        a rescan can run at any time, including while a button is genuinely being
-        held, and must not stomp on the "1" _on_hold_feedback is showing mid-hold.
-        Only needs to exist by the time a button can reference it, which rescan
-        already guarantees by running before the VM/device shows up in any
-        dropdown."""
-        if state_id not in self._known_hold_states:
-            self.tp.create_state(state_id, description, "0")
-            self._known_hold_states.add(state_id)
 
     def request_rescan(self) -> None:
         self._rescan_event.set()

@@ -1,6 +1,6 @@
 {
   "sdk": 13,
-  "version": 105,
+  "version": 106,
   "name": "libvirt Bridge",
   "id": "libvirtbridge",
   "plugin_start_cmd": "env TP_PORT=12136 python3 %TP_PLUGIN_FOLDER%libvirt-bridge/bin/daemon.py",
@@ -65,70 +65,6 @@
           ]
         },
         {
-          "id": "libvirtbridge.action.vmpower.before",
-          "name": "VM Power (Before Threshold)",
-          "prefix": "libvirt Bridge",
-          "type": "communicate",
-          "tryInline": true,
-          "hasHoldFunctionality": true,
-          "format": "Set VM {$libvirtbridge.action.vmpower.before.vm$} power to {$libvirtbridge.action.vmpower.before.operation$} if released before {$libvirtbridge.action.vmpower.before.threshold$}ms",
-          "data": [
-            {
-              "id": "libvirtbridge.action.vmpower.before.vm",
-              "type": "choice",
-              "label": "VM",
-              "default": "",
-              "valueChoices": []
-            },
-            {
-              "id": "libvirtbridge.action.vmpower.before.operation",
-              "type": "choice",
-              "label": "Operation",
-              "default": "start",
-              "valueChoices": ["start", "shutdown", "destroy", "reboot", "toggle"]
-            },
-            {
-              "id": "libvirtbridge.action.vmpower.before.threshold",
-              "type": "number",
-              "label": "Threshold (ms)",
-              "default": 1000,
-              "minValue": 100
-            }
-          ]
-        },
-        {
-          "id": "libvirtbridge.action.vmpower.after",
-          "name": "VM Power (After Threshold)",
-          "prefix": "libvirt Bridge",
-          "type": "communicate",
-          "tryInline": true,
-          "hasHoldFunctionality": true,
-          "format": "Set VM {$libvirtbridge.action.vmpower.after.vm$} power to {$libvirtbridge.action.vmpower.after.operation$} if released after {$libvirtbridge.action.vmpower.after.threshold$}ms",
-          "data": [
-            {
-              "id": "libvirtbridge.action.vmpower.after.vm",
-              "type": "choice",
-              "label": "VM",
-              "default": "",
-              "valueChoices": []
-            },
-            {
-              "id": "libvirtbridge.action.vmpower.after.operation",
-              "type": "choice",
-              "label": "Operation",
-              "default": "start",
-              "valueChoices": ["start", "shutdown", "destroy", "reboot", "toggle"]
-            },
-            {
-              "id": "libvirtbridge.action.vmpower.after.threshold",
-              "type": "number",
-              "label": "Threshold (ms)",
-              "default": 1000,
-              "minValue": 100
-            }
-          ]
-        },
-        {
           "id": "libvirtbridge.action.usbdevice",
           "name": "USB Device",
           "prefix": "libvirt Bridge",
@@ -156,84 +92,6 @@
               "label": "Operation",
               "default": "toggle",
               "valueChoices": ["attach", "detach", "toggle"]
-            }
-          ]
-        },
-        {
-          "id": "libvirtbridge.action.usbdevice.before",
-          "name": "USB Device (Before Threshold)",
-          "prefix": "libvirt Bridge",
-          "type": "communicate",
-          "tryInline": true,
-          "hasHoldFunctionality": true,
-          "format": "Set USB device {$libvirtbridge.action.usbdevice.before.device$} on VM {$libvirtbridge.action.usbdevice.before.vm$} to {$libvirtbridge.action.usbdevice.before.operation$} if released before {$libvirtbridge.action.usbdevice.before.threshold$}ms",
-          "data": [
-            {
-              "id": "libvirtbridge.action.usbdevice.before.device",
-              "type": "choice",
-              "label": "Device",
-              "default": "",
-              "valueChoices": []
-            },
-            {
-              "id": "libvirtbridge.action.usbdevice.before.vm",
-              "type": "choice",
-              "label": "VM",
-              "default": "",
-              "valueChoices": []
-            },
-            {
-              "id": "libvirtbridge.action.usbdevice.before.operation",
-              "type": "choice",
-              "label": "Operation",
-              "default": "toggle",
-              "valueChoices": ["attach", "detach", "toggle"]
-            },
-            {
-              "id": "libvirtbridge.action.usbdevice.before.threshold",
-              "type": "number",
-              "label": "Threshold (ms)",
-              "default": 1000,
-              "minValue": 100
-            }
-          ]
-        },
-        {
-          "id": "libvirtbridge.action.usbdevice.after",
-          "name": "USB Device (After Threshold)",
-          "prefix": "libvirt Bridge",
-          "type": "communicate",
-          "tryInline": true,
-          "hasHoldFunctionality": true,
-          "format": "Set USB device {$libvirtbridge.action.usbdevice.after.device$} on VM {$libvirtbridge.action.usbdevice.after.vm$} to {$libvirtbridge.action.usbdevice.after.operation$} if released after {$libvirtbridge.action.usbdevice.after.threshold$}ms",
-          "data": [
-            {
-              "id": "libvirtbridge.action.usbdevice.after.device",
-              "type": "choice",
-              "label": "Device",
-              "default": "",
-              "valueChoices": []
-            },
-            {
-              "id": "libvirtbridge.action.usbdevice.after.vm",
-              "type": "choice",
-              "label": "VM",
-              "default": "",
-              "valueChoices": []
-            },
-            {
-              "id": "libvirtbridge.action.usbdevice.after.operation",
-              "type": "choice",
-              "label": "Operation",
-              "default": "toggle",
-              "valueChoices": ["attach", "detach", "toggle"]
-            },
-            {
-              "id": "libvirtbridge.action.usbdevice.after.threshold",
-              "type": "number",
-              "label": "Threshold (ms)",
-              "default": 1000,
-              "minValue": 100
             }
           ]
         }
