@@ -7,12 +7,21 @@ plugin actually needs: pairing, dynamically creating and removing states at runt
 (stateUpdate), keeping an action's "choice" data field in sync with the same
 dynamic device list (choiceUpdate), receiving button-triggered actions declared in
 entry.tp's "actions" array -- both a plain press ("action") and, for an action whose
-entry.tp definition includes "hasHoldFunctionality", a button held past Touch
-Portal's hold threshold ("down") and released again ("up") -- receiving the
-user-configured values of entry.tp's "settings" fields (both the initial "info"
-message sent right after pairing, and the "settings" message sent whenever they're
-changed and saved in the app), and reacting to Touch Portal telling us to shut down
-(closePlugin).
+entry.tp definition includes "hasHoldFunctionality", a button being held ("down")
+and released again ("up") -- receiving the user-configured values of entry.tp's
+"settings" fields (both the initial "info" message sent right after pairing, and
+the "settings" message sent whenever they're changed and saved in the app), and
+reacting to Touch Portal telling us to shut down (closePlugin).
+
+Touch Portal sends "down" the instant a hold-enabled button is physically pressed
+and "up" the instant it's released -- confirmed against the official API docs
+(https://www.touch-portal.com/api/index.php?section=communication_listen_action_hold_info):
+"When the user presses the Touch Portal button down, Touch Portal will send the
+'down' event. When the user releases the button, Touch Portal will send the 'up'
+event." There's no built-in minimum hold duration -- a plain tap sends "down"
+immediately followed by "up", same as a genuine hold. So this client applies its
+own HOLD_CONFIRM_SECONDS delay before treating a "down" as a real hold: "up"
+arriving first (a short tap) cancels it.
 
 Message shapes are as sent by Touch Portal 4.6.1. The port can be overridden with
 the TP_PORT environment variable (see entry.tp's plugin_start_cmd).
@@ -30,6 +39,11 @@ log = logging.getLogger("libvirtbridge")
 
 DEFAULT_PORT = 12136
 DEFAULT_HOST = "127.0.0.1"
+
+# How long a hold-enabled button must stay down before its action fires -- Touch
+# Portal itself enforces no minimum, so without this a short tap would fire the
+# hold action too (see the module docstring).
+HOLD_CONFIRM_SECONDS = 0.5
 
 
 class TouchPortalClient:
@@ -52,6 +66,12 @@ class TouchPortalClient:
         self._file = None
         self._lock = threading.Lock()
         self._reader_thread: threading.Thread | None = None
+        # Pending hold-confirmation timers, keyed by actionId -- Touch Portal's
+        # down/up messages carry no per-press instance id, so two buttons sharing
+        # the same hold-enabled action held down at once would collide here; not a
+        # concern for this plugin's small, fixed action set.
+        self._hold_lock = threading.Lock()
+        self._pending_holds: dict[str, threading.Timer] = {}
 
     def connect_and_pair(self) -> None:
         self._sock = socket.create_connection((self.host, self.port), timeout=10)
@@ -97,18 +117,40 @@ class TouchPortalClient:
         elif msg_type == "action":
             self._dispatch_action(message)
         elif msg_type == "down":
-            # A hold-enabled action's button was held past Touch Portal's hold
-            # threshold -- treated the same as a plain press. Touch Portal
-            # sends "up" when it's released; that's not dispatched to
-            # on_action since no action here has release-specific behavior.
-            self._dispatch_action(message)
+            self._start_hold(message)
         elif msg_type == "up":
-            pass
+            self._cancel_hold(message)
         elif msg_type in ("settings", "info"):
             if self._on_settings is not None:
                 settings = self._extract_settings(message)
                 if settings:
                     self._on_settings(settings)
+
+    def _start_hold(self, message: dict) -> None:
+        """A hold-enabled button was pressed down. Only fires the action if it's
+        still down HOLD_CONFIRM_SECONDS later -- see the module docstring for why
+        that's needed."""
+        action_id = message.get("actionId", "")
+        timer = threading.Timer(HOLD_CONFIRM_SECONDS, self._dispatch_action, args=(message,))
+        timer.daemon = True
+        with self._hold_lock:
+            # Replace rather than stack, in case a stray "down" ever arrives
+            # without a matching "up" first.
+            stale = self._pending_holds.pop(action_id, None)
+            self._pending_holds[action_id] = timer
+        if stale is not None:
+            stale.cancel()
+        timer.start()
+
+    def _cancel_hold(self, message: dict) -> None:
+        """The button was released. Before the confirm delay, this cancels the
+        hold -- it was a short tap, not a hold. After, the action already ran and
+        there's nothing left to cancel."""
+        action_id = message.get("actionId", "")
+        with self._hold_lock:
+            timer = self._pending_holds.pop(action_id, None)
+        if timer is not None:
+            timer.cancel()
 
     def _dispatch_action(self, message: dict) -> None:
         if self._on_action is None:
@@ -167,6 +209,10 @@ class TouchPortalClient:
         self._send({"type": "choiceUpdate", "id": field_id, "value": choices})
 
     def close(self) -> None:
+        with self._hold_lock:
+            pending, self._pending_holds = self._pending_holds, {}
+        for timer in pending.values():
+            timer.cancel()
         if self._sock is not None:
             try:
                 self._sock.close()
