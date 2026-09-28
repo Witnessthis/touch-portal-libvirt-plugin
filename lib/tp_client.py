@@ -21,24 +21,24 @@ and "up" the instant it's released -- confirmed against the official API docs
 event." There's no built-in minimum hold duration -- a plain tap sends "down"
 immediately followed by "up", same as a genuine hold.
 
-What this plugin wants is a long press: run the action once, on release, but only
-if the button was held past LONG_PRESS_SECONDS -- not a hold-to-repeat that fires
-while still held. So "down" just records a deadline (now + LONG_PRESS_SECONDS);
-"up" fires the action only if that deadline has already passed. No timer/thread
-is scheduled for the action itself, and it never fires while the button is still
-down.
+This client stays deliberately agnostic about what "held long enough" means for any
+given action: "up" just reports how long the button was down (on_hold_release) --
+whether that counts as significant, and what to do about it, is entirely up to the
+caller (see bin/daemon.py's Before/After Threshold actions, which compare it against
+a per-action, user-configured threshold rather than a fixed constant here).
 
-Separately, on_hold_feedback exists purely so the button can *show* the user the
-threshold was reached, while it's still held -- e.g. Touch Portal's Full Size
-Icon toggle, wired in the button editor off a state this plugin exposes. That
-does need a real timer (there's no other way to notice "still down after
-LONG_PRESS_SECONDS" without polling): "down" schedules one, which calls
-on_hold_feedback(action_id, data, True) if it fires; "up" always cancels it and
-calls on_hold_feedback(action_id, data, False) to reset. This is cosmetic only
--- a tiny race between an "up" arriving right as the timer fires can in
-principle leave a stray True after a False, self-correcting on the next press
--- so it's kept separate from the action-dispatch deadline above, which has no
-such tolerance.
+Separately, on_hold_feedback exists purely so a button can *show* the user a
+threshold was reached while still held -- e.g. Touch Portal's Full Size Icon
+toggle, wired in the button editor off a state the plugin exposes. Unlike
+on_hold_release (reported after the fact, on "up"), this needs a real timer, since
+there's no other way to notice "still down after N ms" without polling: "down"
+schedules one for any data field whose id ends in THRESHOLD_FIELD_SUFFIX, which
+calls on_hold_feedback(action_id, data, True) if it fires; "up" always cancels it
+and calls on_hold_feedback(action_id, data, False) to reset. This is cosmetic only
+-- a tiny race between an "up" arriving right as the timer fires can in principle
+leave a stray True after a False, self-correcting on the next press. Whether a
+given action's feedback signal is actually wired to anything is up to the caller
+(bin/daemon.py only acts on it for its After Threshold actions).
 
 Pending presses are keyed by (actionId, data) rather than actionId alone --
 several buttons can share one hold-enabled action (e.g. this plugin's VM Power
@@ -65,10 +65,10 @@ log = logging.getLogger("libvirtbridge")
 DEFAULT_PORT = 12136
 DEFAULT_HOST = "127.0.0.1"
 
-# How long a hold-enabled button must stay down before release counts as a long
-# press rather than a tap -- Touch Portal itself enforces no minimum (see the
-# module docstring).
-LONG_PRESS_SECONDS = 1.0
+# Convention shared with bin/daemon.py's entry.tp field ids: any data field whose
+# id ends with this is treated as this action instance's feedback threshold, in
+# milliseconds -- see the module docstring's on_hold_feedback paragraph.
+THRESHOLD_FIELD_SUFFIX = ".threshold"
 
 
 class TouchPortalClient:
@@ -80,6 +80,7 @@ class TouchPortalClient:
         on_close: Callable[[], None] | None = None,
         on_action: Callable[[str, dict[str, str]], None] | None = None,
         on_settings: Callable[[dict[str, str]], None] | None = None,
+        on_hold_release: Callable[[str, dict[str, str], float], None] | None = None,
         on_hold_feedback: Callable[[str, dict[str, str], bool], None] | None = None,
     ) -> None:
         self.plugin_id = plugin_id
@@ -88,15 +89,17 @@ class TouchPortalClient:
         self._on_close = on_close
         self._on_action = on_action
         self._on_settings = on_settings
+        self._on_hold_release = on_hold_release
         self._on_hold_feedback = on_hold_feedback
         self._sock: socket.socket | None = None
         self._file = None
         self._lock = threading.Lock()
         self._reader_thread: threading.Thread | None = None
         # Pending presses, keyed by (actionId, data) -- see the module docstring
-        # for why data has to be part of the key.
+        # for why data has to be part of the key. Value is (press time, feedback
+        # timer or None if this data had no ...threshold field).
         self._hold_lock = threading.Lock()
-        self._pending_holds: dict[tuple, tuple[float, threading.Timer]] = {}
+        self._pending_holds: dict[tuple, tuple[float, threading.Timer | None]] = {}
 
     def connect_and_pair(self) -> None:
         self._sock = socket.create_connection((self.host, self.port), timeout=10)
@@ -144,7 +147,7 @@ class TouchPortalClient:
         elif msg_type == "down":
             self._mark_press_down(message)
         elif msg_type == "up":
-            self._maybe_dispatch_long_press(message)
+            self._report_hold_release(message)
         elif msg_type in ("settings", "info"):
             if self._on_settings is not None:
                 settings = self._extract_settings(message)
@@ -152,39 +155,47 @@ class TouchPortalClient:
                     self._on_settings(settings)
 
     def _mark_press_down(self, message: dict) -> None:
-        """A hold-enabled button was pressed down: records when it'll have been
-        held long enough to count as a long press on release, and schedules the
-        feedback timer that fires if it's still down at that point."""
+        """A hold-enabled button was pressed down: records when this press
+        started (for on_hold_release, reported on "up"), and, if its data
+        includes a "...threshold" field, schedules the feedback timer that
+        fires if it's still down once that many milliseconds have passed."""
         action_id = message.get("actionId", "")
         data = self._flatten_data(message)
         key = self._hold_key(action_id, data)
-        deadline = time.monotonic() + LONG_PRESS_SECONDS
-        timer = threading.Timer(
-            LONG_PRESS_SECONDS, self._fire_hold_feedback, args=(key, action_id, data)
-        )
-        timer.daemon = True
+        press_time = time.monotonic()
+
+        feedback_timer = None
+        threshold_ms = self._extract_threshold_ms(data)
+        if threshold_ms is not None:
+            feedback_timer = threading.Timer(
+                threshold_ms / 1000.0, self._fire_hold_feedback, args=(key, action_id, data)
+            )
+            feedback_timer.daemon = True
+
         with self._hold_lock:
             # Replace rather than stack, in case a stray "down" ever arrives
             # without a matching "up" first.
             stale = self._pending_holds.pop(key, None)
-            self._pending_holds[key] = (deadline, timer)
-        if stale is not None:
+            self._pending_holds[key] = (press_time, feedback_timer)
+        if stale is not None and stale[1] is not None:
             stale[1].cancel()
-        timer.start()
+        if feedback_timer is not None:
+            feedback_timer.start()
 
     def _fire_hold_feedback(self, key: tuple, action_id: str, data: dict[str, str]) -> None:
-        """Runs on the timer's own thread, LONG_PRESS_SECONDS after "down" -- only
-        signals feedback if the button's still down (nothing popped it first)."""
+        """Runs on the timer's own thread, once this data's threshold has passed
+        after "down" -- only signals feedback if the button's still down
+        (nothing popped it first)."""
         with self._hold_lock:
             if key not in self._pending_holds:
                 return  # already released -- "up" got there first
         if self._on_hold_feedback is not None:
             self._on_hold_feedback(action_id, data, True)
 
-    def _maybe_dispatch_long_press(self, message: dict) -> None:
+    def _report_hold_release(self, message: dict) -> None:
         """The button was released: cancels the feedback timer and resets its
-        signal, then fires the action only if it was still down past its
-        deadline -- a quick tap (deadline not yet reached) does nothing."""
+        signal, then reports how long it was held -- deciding what that means
+        is entirely up to on_hold_release's caller."""
         action_id = message.get("actionId", "")
         data = self._flatten_data(message)
         key = self._hold_key(action_id, data)
@@ -192,12 +203,23 @@ class TouchPortalClient:
             pending = self._pending_holds.pop(key, None)
         if pending is None:
             return
-        deadline, timer = pending
-        timer.cancel()
+        press_time, feedback_timer = pending
+        if feedback_timer is not None:
+            feedback_timer.cancel()
         if self._on_hold_feedback is not None:
             self._on_hold_feedback(action_id, data, False)
-        if time.monotonic() >= deadline:
-            self._dispatch_action(message)
+        if self._on_hold_release is not None:
+            self._on_hold_release(action_id, data, time.monotonic() - press_time)
+
+    @staticmethod
+    def _extract_threshold_ms(data: dict[str, str]) -> float | None:
+        for field_id, value in data.items():
+            if field_id.endswith(THRESHOLD_FIELD_SUFFIX):
+                try:
+                    return float(value)
+                except (TypeError, ValueError):
+                    return None
+        return None
 
     @staticmethod
     def _flatten_data(message: dict) -> dict[str, str]:

@@ -72,18 +72,37 @@ A button doesn't need the state color wired up (steps 1-5) to use the action —
 steps 6-9 alone are enough for an attach/detach/toggle button with no visual
 feedback.
 
-**USB Device** also supports Touch Portal's **On Hold** tab, so a single button
-can run one operation on a short press and a different one on a long press: add
-it under **On Press** with Operation `attach`, say, and again under **On Hold**
-with Operation `detach` — each placement keeps its own Device/VM/Operation
-values. The On Hold action fires once, on release, only if the button was held
-down for about a second — Touch Portal itself enforces no minimum, so the
-plugin applies that threshold itself to tell a genuine long press from a quick
-tap. While held past that point, state `<name> long-press active` (the same
-device name as its color state) flips to `1` (back to `0` on release) — wire
-whatever visual feedback you want off it (e.g. **On Event** → state changes to
-`1` → **Change Button Visuals** → **Icon** → Full Size Icon), entirely your
-choice; the plugin only provides the signal.
+**USB Device (Before Threshold)** and **USB Device (After Threshold)** are
+separate actions for building a button where a short tap does one thing and a
+genuine long press does another — e.g. tap to switch a display input (a
+different plugin's action, entirely independent of this one) and long-press to
+attach/detach a device. Unlike a plain button press, Touch Portal cannot cancel
+an action once it's fired, so these two run on *release*, gated by how long the
+button was actually held — placed under the button's **On Hold** tab (never
+**On Press**, which fires unconditionally, instantly, with no way to gate it):
+
+1. Button → **On Hold** tab → add action → **USB Device (Before Threshold)**.
+2. Device, VM, Operation: same as the plain action.
+3. Threshold (ms): how long the button must be held for this *not* to count as
+   a tap. Default `1000`.
+4. Add a second action, **USB Device (After Threshold)**, with the same
+   Device/VM/Operation and the *same* Threshold value.
+
+With matching thresholds, releasing before it fires the Before action and
+releasing at/after it fires the After action — never both, never neither. If
+you give them different thresholds you'll get a gap (releasing in between
+fires nothing) or an overlap (releasing in between fires both) — the plugin
+doesn't know the other placement's value, so keeping them in sync is on you.
+Either one works standalone too, e.g. a button with only **USB Device (After
+Threshold)** and nothing under On Press just does nothing on a quick tap.
+
+While held past its own threshold, **USB Device (After Threshold)** flips state
+`<name> long-press active` (the same device name as its color state) to `1`
+(back to `0` on release) — wire whatever visual feedback you want off it (e.g.
+**On Event** → state changes to `1` → **Change Button Visuals** → **Icon** →
+Full Size Icon), entirely your choice; the plugin only provides the signal.
+**Before Threshold** has no such state — there's nothing meaningful to show
+mid-hold for it.
 
 ## Wiring a VM command button
 
@@ -102,16 +121,27 @@ A single button that both shows a VM's power state and sends it a command:
 A button doesn't need the state color wired up (steps 1-5) to use the action —
 steps 6-8 alone are enough for a plain command button with no visual feedback.
 
-**VM Power** also supports Touch Portal's **On Hold** tab, so a single button
-can send one operation on a short press and a different one on a long press:
-add it under **On Press** with Operation `start`, say, and again under **On
-Hold** with Operation `shutdown` — each placement keeps its own VM/Operation
-values. The On Hold action fires once, on release, only if the button was held
-down for about a second — Touch Portal itself enforces no minimum, so the
-plugin applies that threshold itself to tell a genuine long press from a quick
-tap. While held past that point, state `<vm name> long-press active` (the same
-VM name as its power color state) flips to `1` (back to `0` on release) — wire
-whatever visual feedback you want off it, same as USB Device above.
+**VM Power (Before Threshold)** and **VM Power (After Threshold)** work the
+same way as USB Device's pair above — separate actions, placed under **On
+Hold**, gated on release by a shared `Threshold (ms)` value:
+
+1. Button → **On Hold** tab → add action → **VM Power (Before Threshold)**.
+2. VM, Operation: same as the plain action.
+3. Threshold (ms): default `1000`.
+4. Add a second action, **VM Power (After Threshold)**, same VM/Operation and
+   the *same* Threshold value.
+
+While held past its own threshold, **VM Power (After Threshold)** flips state
+`<vm name> long-press active` (the same VM name as its power color state) to
+`1` (back to `0` on release) — wire whatever visual feedback you want off it,
+same as USB Device above.
+
+Nothing stops you pairing a Before/After pair from *different* plugins on one
+button, as long as both sides use the same threshold — e.g. a display-switch
+plugin's Before Threshold action for a quick tap, and this plugin's VM Power
+(After Threshold) for a long press. Neither plugin needs to know the other
+exists; both just independently compare the same release time against the
+same number.
 
 ### Shutting down a Windows VM from the login screen
 
