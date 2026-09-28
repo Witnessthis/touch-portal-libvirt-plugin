@@ -48,7 +48,7 @@ DEFAULT_HOST = "127.0.0.1"
 # How long a hold-enabled button must stay down before release counts as a long
 # press rather than a tap -- Touch Portal itself enforces no minimum (see the
 # module docstring).
-LONG_PRESS_SECONDS = 0.5
+LONG_PRESS_SECONDS = 1.0
 
 
 class TouchPortalClient:

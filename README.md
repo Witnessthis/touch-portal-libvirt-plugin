@@ -72,7 +72,7 @@ can run one operation on a short press and a different one on a long press: add
 it under **On Press** with Operation `attach`, say, and again under **On Hold**
 with Operation `detach` — each placement keeps its own Device/Operation values.
 The On Hold action fires once, on release, only if the button was held down for
-about half a second — Touch Portal itself enforces no minimum, so the plugin
+about a second — Touch Portal itself enforces no minimum, so the plugin
 applies that threshold itself to tell a genuine long press from a quick tap.
 
 ## Wiring a VM command button
@@ -95,7 +95,7 @@ can send one operation on a short press and a different one on a long press:
 add it under **On Press** with Operation `start`, say, and again under **On
 Hold** with Operation `shutdown` — each placement keeps its own Operation
 value. The On Hold action fires once, on release, only if the button was held
-down for about half a second — Touch Portal itself enforces no minimum, so the
+down for about a second — Touch Portal itself enforces no minimum, so the
 plugin applies that threshold itself to tell a genuine long press from a quick
 tap.
 
