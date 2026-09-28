@@ -19,9 +19,13 @@ and "up" the instant it's released -- confirmed against the official API docs
 "When the user presses the Touch Portal button down, Touch Portal will send the
 'down' event. When the user releases the button, Touch Portal will send the 'up'
 event." There's no built-in minimum hold duration -- a plain tap sends "down"
-immediately followed by "up", same as a genuine hold. So this client applies its
-own HOLD_CONFIRM_SECONDS delay before treating a "down" as a real hold: "up"
-arriving first (a short tap) cancels it.
+immediately followed by "up", same as a genuine hold.
+
+What this plugin wants is a long press: run the action once, on release, but only
+if the button was held past LONG_PRESS_SECONDS -- not a hold-to-repeat that fires
+while still held. So "down" just records a deadline (now + LONG_PRESS_SECONDS);
+"up" fires the action only if that deadline has already passed. No timer/thread
+is scheduled, and nothing fires while the button is still down.
 
 Message shapes are as sent by Touch Portal 4.6.1. The port can be overridden with
 the TP_PORT environment variable (see entry.tp's plugin_start_cmd).
@@ -33,6 +37,7 @@ import json
 import logging
 import socket
 import threading
+import time
 from collections.abc import Callable
 
 log = logging.getLogger("libvirtbridge")
@@ -40,10 +45,10 @@ log = logging.getLogger("libvirtbridge")
 DEFAULT_PORT = 12136
 DEFAULT_HOST = "127.0.0.1"
 
-# How long a hold-enabled button must stay down before its action fires -- Touch
-# Portal itself enforces no minimum, so without this a short tap would fire the
-# hold action too (see the module docstring).
-HOLD_CONFIRM_SECONDS = 0.5
+# How long a hold-enabled button must stay down before release counts as a long
+# press rather than a tap -- Touch Portal itself enforces no minimum (see the
+# module docstring).
+LONG_PRESS_SECONDS = 0.5
 
 
 class TouchPortalClient:
@@ -66,12 +71,12 @@ class TouchPortalClient:
         self._file = None
         self._lock = threading.Lock()
         self._reader_thread: threading.Thread | None = None
-        # Pending hold-confirmation timers, keyed by actionId -- Touch Portal's
-        # down/up messages carry no per-press instance id, so two buttons sharing
-        # the same hold-enabled action held down at once would collide here; not a
-        # concern for this plugin's small, fixed action set.
+        # Long-press deadlines (time.monotonic() seconds), keyed by actionId --
+        # Touch Portal's down/up messages carry no per-press instance id, so two
+        # buttons sharing the same hold-enabled action held down at once would
+        # collide here; not a concern for this plugin's small, fixed action set.
         self._hold_lock = threading.Lock()
-        self._pending_holds: dict[str, threading.Timer] = {}
+        self._hold_deadlines: dict[str, float] = {}
 
     def connect_and_pair(self) -> None:
         self._sock = socket.create_connection((self.host, self.port), timeout=10)
@@ -117,40 +122,30 @@ class TouchPortalClient:
         elif msg_type == "action":
             self._dispatch_action(message)
         elif msg_type == "down":
-            self._start_hold(message)
+            self._mark_press_down(message)
         elif msg_type == "up":
-            self._cancel_hold(message)
+            self._maybe_dispatch_long_press(message)
         elif msg_type in ("settings", "info"):
             if self._on_settings is not None:
                 settings = self._extract_settings(message)
                 if settings:
                     self._on_settings(settings)
 
-    def _start_hold(self, message: dict) -> None:
-        """A hold-enabled button was pressed down. Only fires the action if it's
-        still down HOLD_CONFIRM_SECONDS later -- see the module docstring for why
-        that's needed."""
+    def _mark_press_down(self, message: dict) -> None:
+        """A hold-enabled button was pressed down -- just records when it'll have
+        been held long enough to count as a long press on release."""
         action_id = message.get("actionId", "")
-        timer = threading.Timer(HOLD_CONFIRM_SECONDS, self._dispatch_action, args=(message,))
-        timer.daemon = True
         with self._hold_lock:
-            # Replace rather than stack, in case a stray "down" ever arrives
-            # without a matching "up" first.
-            stale = self._pending_holds.pop(action_id, None)
-            self._pending_holds[action_id] = timer
-        if stale is not None:
-            stale.cancel()
-        timer.start()
+            self._hold_deadlines[action_id] = time.monotonic() + LONG_PRESS_SECONDS
 
-    def _cancel_hold(self, message: dict) -> None:
-        """The button was released. Before the confirm delay, this cancels the
-        hold -- it was a short tap, not a hold. After, the action already ran and
-        there's nothing left to cancel."""
+    def _maybe_dispatch_long_press(self, message: dict) -> None:
+        """The button was released. Fires the action only if it was still down
+        past its deadline -- a quick tap (deadline not yet reached) does nothing."""
         action_id = message.get("actionId", "")
         with self._hold_lock:
-            timer = self._pending_holds.pop(action_id, None)
-        if timer is not None:
-            timer.cancel()
+            deadline = self._hold_deadlines.pop(action_id, None)
+        if deadline is not None and time.monotonic() >= deadline:
+            self._dispatch_action(message)
 
     def _dispatch_action(self, message: dict) -> None:
         if self._on_action is None:
@@ -209,10 +204,6 @@ class TouchPortalClient:
         self._send({"type": "choiceUpdate", "id": field_id, "value": choices})
 
     def close(self) -> None:
-        with self._hold_lock:
-            pending, self._pending_holds = self._pending_holds, {}
-        for timer in pending.values():
-            timer.cancel()
         if self._sock is not None:
             try:
                 self._sock.close()

@@ -71,9 +71,9 @@ feedback.
 can run one operation on a short press and a different one on a long press: add
 it under **On Press** with Operation `attach`, say, and again under **On Hold**
 with Operation `detach` — each placement keeps its own Device/Operation values.
-A press counts as a hold once it's been held down for about half a second —
-Touch Portal itself doesn't enforce any minimum, so the plugin applies that
-delay itself to tell a genuine hold from a quick tap.
+The On Hold action fires once, on release, only if the button was held down for
+about half a second — Touch Portal itself enforces no minimum, so the plugin
+applies that threshold itself to tell a genuine long press from a quick tap.
 
 ## Wiring a VM command button
 
@@ -94,9 +94,10 @@ steps 6-7 alone are enough for a plain command button with no visual feedback.
 can send one operation on a short press and a different one on a long press:
 add it under **On Press** with Operation `start`, say, and again under **On
 Hold** with Operation `shutdown` — each placement keeps its own Operation
-value. A press counts as a hold once it's been held down for about half a
-second — Touch Portal itself doesn't enforce any minimum, so the plugin
-applies that delay itself to tell a genuine hold from a quick tap.
+value. The On Hold action fires once, on release, only if the button was held
+down for about half a second — Touch Portal itself enforces no minimum, so the
+plugin applies that threshold itself to tell a genuine long press from a quick
+tap.
 
 ### Shutting down a Windows VM from the login screen
 
