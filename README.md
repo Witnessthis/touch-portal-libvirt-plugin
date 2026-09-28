@@ -74,6 +74,10 @@ with Operation `detach` — each placement keeps its own Device/Operation values
 The On Hold action fires once, on release, only if the button was held down for
 about a second — Touch Portal itself enforces no minimum, so the plugin
 applies that threshold itself to tell a genuine long press from a quick tap.
+While held past that point, state `USB Device long-press active` flips to `1`
+(back to `0` on release) — wire whatever visual feedback you want off it (e.g.
+**On Event** → state changes to `1` → **Change Button Visuals** → **Icon** →
+Full Size Icon), entirely your choice; the plugin only provides the signal.
 
 ## Wiring a VM command button
 
@@ -97,7 +101,9 @@ Hold** with Operation `shutdown` — each placement keeps its own Operation
 value. The On Hold action fires once, on release, only if the button was held
 down for about a second — Touch Portal itself enforces no minimum, so the
 plugin applies that threshold itself to tell a genuine long press from a quick
-tap.
+tap. While held past that point, state `VM Power long-press active` flips to
+`1` (back to `0` on release) — wire whatever visual feedback you want off it,
+same as USB Device above.
 
 ### Shutting down a Windows VM from the login screen
 

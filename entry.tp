@@ -1,6 +1,6 @@
 {
   "sdk": 13,
-  "version": 102,
+  "version": 103,
   "name": "libvirt Bridge",
   "id": "libvirtbridge",
   "plugin_start_cmd": "env TP_PORT=12136 python3 %TP_PLUGIN_FOLDER%libvirt-bridge/bin/daemon.py",
@@ -84,7 +84,20 @@
           ]
         }
       ],
-      "states": [],
+      "states": [
+        {
+          "id": "libvirtbridge.vm.holdactive",
+          "type": "text",
+          "desc": "VM Power long-press active",
+          "default": "0"
+        },
+        {
+          "id": "libvirtbridge.usbdevice.holdactive",
+          "type": "text",
+          "desc": "USB Device long-press active",
+          "default": "0"
+        }
+      ],
       "events": []
     }
   ]

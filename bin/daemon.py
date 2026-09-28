@@ -123,6 +123,18 @@ USB_DEVICE_ACTION_ID = "libvirtbridge.action.usbdevice"
 USB_DEVICE_DEVICE_FIELD_ID = "libvirtbridge.action.usbdevice.device"
 USB_DEVICE_OPERATION_FIELD_ID = "libvirtbridge.action.usbdevice.operation"
 
+# Statically declared in entry.tp's "states" array -- unlike VM_STATE_ID and the
+# per-device states below, these don't depend on settings, so they don't need
+# runtime creation via create_state. Flipped by TouchPortalClient's
+# on_hold_feedback while a hold-enabled button is held past the long-press
+# threshold, purely so a button can be wired to show that visually (e.g. Touch
+# Portal's Full Size Icon toggle) -- what to show is entirely the user's choice
+# in the button editor, not this plugin's concern.
+HOLD_FEEDBACK_STATE_IDS = {
+    VM_POWER_ACTION_ID: "libvirtbridge.vm.holdactive",
+    USB_DEVICE_ACTION_ID: "libvirtbridge.usbdevice.holdactive",
+}
+
 # Must match entry.tp's settings[].name exactly -- that field doubles as the id
 # Touch Portal uses as the key in its "settings"/"info" messages.
 SETTING_VM_NAME = "VM Name"
@@ -164,6 +176,7 @@ class Bridge:
             on_close=self._on_tp_close,
             on_action=self._on_action,
             on_settings=self._on_settings,
+            on_hold_feedback=self._on_hold_feedback,
         )
         # Only touched by rescan(), which only ever runs on the rescan worker.
         self._known_states: set[str] = set()
@@ -227,6 +240,11 @@ class Bridge:
             self._on_usb_action(data)
         else:
             log.warning("received unknown action id %r", action_id)
+
+    def _on_hold_feedback(self, action_id: str, active: bool) -> None:
+        state_id = HOLD_FEEDBACK_STATE_IDS.get(action_id)
+        if state_id is not None:
+            self.tp.update_state(state_id, "1" if active else "0")
 
     def _on_power_action(self, data: dict[str, str]) -> None:
         problem = self.settings.problem()
