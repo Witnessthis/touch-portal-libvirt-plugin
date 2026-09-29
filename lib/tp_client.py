@@ -6,38 +6,14 @@ plugin actually needs: pairing, dynamically creating and removing states at runt
 (createState/removeState -- no entry.tp "states" array needed), pushing values
 (stateUpdate), keeping an action's "choice" data field in sync with the same
 dynamic device list (choiceUpdate), receiving button-triggered actions declared in
-entry.tp's "actions" array -- both a plain press ("action") and, for an action whose
-entry.tp definition includes "hasHoldFunctionality", a button being held ("down")
-and released again ("up") -- receiving the user-configured values of entry.tp's
-"settings" fields (both the initial "info" message sent right after pairing, and
-the "settings" message sent whenever they're changed and saved in the app), and
-reacting to Touch Portal telling us to shut down (closePlugin).
+entry.tp's "actions" array ("action"), receiving the user-configured values of
+entry.tp's "settings" fields (both the initial "info" message sent right after
+pairing, and the "settings" message sent whenever they're changed and saved in the
+app), and reacting to Touch Portal telling us to shut down (closePlugin).
 
-Touch Portal sends "down" the instant a hold-enabled button is physically pressed
-and "up" the instant it's released -- confirmed against the official API docs
-(https://www.touch-portal.com/api/index.php?section=communication_listen_action_hold_info):
-"When the user presses the Touch Portal button down, Touch Portal will send the
-'down' event. When the user releases the button, Touch Portal will send the 'up'
-event." There's no built-in minimum hold duration -- a plain tap sends "down"
-immediately followed by "up", same as a genuine hold.
-
-What this plugin wants is a long press: run the action once, on release, but only
-if the button was held past LONG_PRESS_SECONDS -- not a hold-to-repeat that fires
-while still held. So "down" just records a deadline (now + LONG_PRESS_SECONDS);
-"up" fires the action only if that deadline has already passed. No timer/thread
-is scheduled for the action itself, and it never fires while the button is still
-down.
-
-Separately, on_hold_feedback exists purely so the button can *show* the user the
-threshold was reached, while it's still held -- e.g. Touch Portal's Full Size
-Icon toggle, wired in the button editor off a state this plugin exposes. That
-does need a real timer (there's no other way to notice "still down after
-LONG_PRESS_SECONDS" without polling): "down" schedules one, which calls
-on_hold_feedback(action_id, True) if it fires; "up" always cancels it and calls
-on_hold_feedback(action_id, False) to reset. This is cosmetic only -- a tiny
-race between an "up" arriving right as the timer fires can in principle leave a
-stray True after a False, self-correcting on the next press -- so it's kept
-separate from the action-dispatch deadline above, which has no such tolerance.
+No action here declares "hasHoldFunctionality" -- gating a button by how long it
+was held is handled by the separate touch-portal-holdtiming-plugin project
+instead, not by this plugin's own actions.
 
 Message shapes are as sent by Touch Portal 4.6.1. The port can be overridden with
 the TP_PORT environment variable (see entry.tp's plugin_start_cmd).
@@ -49,18 +25,12 @@ import json
 import logging
 import socket
 import threading
-import time
 from collections.abc import Callable
 
 log = logging.getLogger("libvirtbridge")
 
 DEFAULT_PORT = 12136
 DEFAULT_HOST = "127.0.0.1"
-
-# How long a hold-enabled button must stay down before release counts as a long
-# press rather than a tap -- Touch Portal itself enforces no minimum (see the
-# module docstring).
-LONG_PRESS_SECONDS = 1.0
 
 
 class TouchPortalClient:
@@ -72,7 +42,6 @@ class TouchPortalClient:
         on_close: Callable[[], None] | None = None,
         on_action: Callable[[str, dict[str, str]], None] | None = None,
         on_settings: Callable[[dict[str, str]], None] | None = None,
-        on_hold_feedback: Callable[[str, bool], None] | None = None,
     ) -> None:
         self.plugin_id = plugin_id
         self.host = host
@@ -80,17 +49,10 @@ class TouchPortalClient:
         self._on_close = on_close
         self._on_action = on_action
         self._on_settings = on_settings
-        self._on_hold_feedback = on_hold_feedback
         self._sock: socket.socket | None = None
         self._file = None
         self._lock = threading.Lock()
         self._reader_thread: threading.Thread | None = None
-        # Pending presses, keyed by actionId -- Touch Portal's down/up messages
-        # carry no per-press instance id, so two buttons sharing the same
-        # hold-enabled action held down at once would collide here; not a concern
-        # for this plugin's small, fixed action set.
-        self._hold_lock = threading.Lock()
-        self._pending_holds: dict[str, tuple[float, threading.Timer]] = {}
 
     def connect_and_pair(self) -> None:
         self._sock = socket.create_connection((self.host, self.port), timeout=10)
@@ -135,57 +97,11 @@ class TouchPortalClient:
                 self._on_close()
         elif msg_type == "action":
             self._dispatch_action(message)
-        elif msg_type == "down":
-            self._mark_press_down(message)
-        elif msg_type == "up":
-            self._maybe_dispatch_long_press(message)
         elif msg_type in ("settings", "info"):
             if self._on_settings is not None:
                 settings = self._extract_settings(message)
                 if settings:
                     self._on_settings(settings)
-
-    def _mark_press_down(self, message: dict) -> None:
-        """A hold-enabled button was pressed down: records when it'll have been
-        held long enough to count as a long press on release, and schedules the
-        feedback timer that fires if it's still down at that point."""
-        action_id = message.get("actionId", "")
-        deadline = time.monotonic() + LONG_PRESS_SECONDS
-        timer = threading.Timer(LONG_PRESS_SECONDS, self._fire_hold_feedback, args=(action_id,))
-        timer.daemon = True
-        with self._hold_lock:
-            # Replace rather than stack, in case a stray "down" ever arrives
-            # without a matching "up" first.
-            stale = self._pending_holds.pop(action_id, None)
-            self._pending_holds[action_id] = (deadline, timer)
-        if stale is not None:
-            stale[1].cancel()
-        timer.start()
-
-    def _fire_hold_feedback(self, action_id: str) -> None:
-        """Runs on the timer's own thread, LONG_PRESS_SECONDS after "down" -- only
-        signals feedback if the button's still down (nothing popped it first)."""
-        with self._hold_lock:
-            if action_id not in self._pending_holds:
-                return  # already released -- "up" got there first
-        if self._on_hold_feedback is not None:
-            self._on_hold_feedback(action_id, True)
-
-    def _maybe_dispatch_long_press(self, message: dict) -> None:
-        """The button was released: cancels the feedback timer and resets its
-        signal, then fires the action only if it was still down past its
-        deadline -- a quick tap (deadline not yet reached) does nothing."""
-        action_id = message.get("actionId", "")
-        with self._hold_lock:
-            pending = self._pending_holds.pop(action_id, None)
-        if pending is None:
-            return
-        deadline, timer = pending
-        timer.cancel()
-        if self._on_hold_feedback is not None:
-            self._on_hold_feedback(action_id, False)
-        if time.monotonic() >= deadline:
-            self._dispatch_action(message)
 
     def _dispatch_action(self, message: dict) -> None:
         if self._on_action is None:
